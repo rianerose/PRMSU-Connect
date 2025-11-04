@@ -69,24 +69,61 @@ reload();
 })();
 </script>
 <script>
-// SSE client to receive live participation counts
-if(typeof(EventSource) !== 'undefined'){
-  const src = new EventSource('sse_events.php');
-  src.onmessage = function(e){
-    try{
-      const d = JSON.parse(e.data);
-      if(d.heartbeat) return;
-      // d is an object: {event_id: {going: n, not_going: m}, ...}
-      for(const [eid, obj] of Object.entries(d)){
-        const g = document.getElementById('g_'+eid);
-        const n = document.getElementById('n_'+eid);
-        if(g) g.innerText = obj.going ?? 0;
-        if(n) n.innerText = obj.not_going ?? 0;
+// Lightweight polling for participation counts (compatible with hosts without SSE)
+(function initParticipationPolling(){
+  const POLL_INTERVAL = 5000;
+  let timerId = null;
+
+  async function poll(){
+    try {
+      const res = await fetchWithTimeout('sse_events.php', { cache: 'no-store' }, 7000);
+      if(!res.ok){
+        throw new Error('HTTP '+res.status);
       }
-    }catch(err){ console.error('SSE parse', err); }
+
+      let payload;
+      try {
+        payload = await res.json();
+      } catch(parseErr) {
+        throw new Error('Invalid JSON payload');
+      }
+
+      const events = (payload && payload.events) ? payload.events : {};
+      for (const [eid, counts] of Object.entries(events)) {
+        applyCounts(eid, counts || {});
+      }
+    } catch(err) {
+      console.error('Participation polling error', err);
+    } finally {
+      timerId = setTimeout(poll, POLL_INTERVAL);
+    }
+  }
+
+  function applyCounts(eid, counts){
+    const going = typeof counts.going === 'number' ? counts.going : 0;
+    const notGoing = typeof counts.not_going === 'number' ? counts.not_going : 0;
+
+    const badgeGoing = document.getElementById('going_'+eid);
+    if(badgeGoing) badgeGoing.textContent = going;
+
+    const badgeNotGoing = document.getElementById('not_going_'+eid);
+    if(badgeNotGoing) badgeNotGoing.textContent = notGoing;
+
+    const countGoing = document.getElementById('going_count_'+eid);
+    if(countGoing) countGoing.textContent = going;
+
+    const countNotGoing = document.getElementById('not_going_count_'+eid);
+    if(countNotGoing) countNotGoing.textContent = notGoing;
+  }
+
+  poll();
+
+  window.participationPolling = {
+    stop(){
+      if(timerId) clearTimeout(timerId);
+    }
   };
-  src.onerror = function(e){ /* reconnects automatically */ }
-}
+})();
 </script>
 
 
@@ -113,6 +150,12 @@ async function setParticipation(eventId, button, status) {
         // Update counts
         document.getElementById('going_' + eventId).textContent = data.going;
         document.getElementById('not_going_' + eventId).textContent = data.not_going;
+
+        const displayGoing = document.getElementById('going_count_' + eventId);
+        if(displayGoing) displayGoing.textContent = data.going;
+
+        const displayNotGoing = document.getElementById('not_going_count_' + eventId);
+        if(displayNotGoing) displayNotGoing.textContent = data.not_going;
         
         // Update button states
         const buttons = document.querySelectorAll(`[data-part-event="${eventId}"]`);
